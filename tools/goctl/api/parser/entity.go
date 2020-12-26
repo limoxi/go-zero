@@ -30,7 +30,7 @@ func newEntity(state *baseState, api *spec.ApiSpec, parser entityParser) entity 
 }
 
 func (s *entity) process() error {
-	line, err := s.state.readLine()
+	line, err := s.state.readLineSkipComment()
 	if err != nil {
 		return err
 	}
@@ -59,7 +59,7 @@ func (s *entity) process() error {
 	var annos []spec.Annotation
 memberLoop:
 	for {
-		ch, err := s.state.read()
+		ch, err := s.state.readSkipComment()
 		if err != nil {
 			return err
 		}
@@ -70,19 +70,32 @@ memberLoop:
 		case ch == at:
 		annotationLoop:
 			for {
-				next, err := s.state.read()
+				next, err := s.state.readSkipComment()
 				if err != nil {
 					return err
 				}
 				switch {
 				case isSpace(next):
-					if builder.Len() > 0 {
+					if builder.Len() > 0 && annoName == "" {
 						annoName = builder.String()
 						builder.Reset()
 					}
 				case isNewline(next):
 					if builder.Len() == 0 {
 						return errors.New("invalid annotation format")
+					}
+
+					if len(annoName) > 0 {
+						value := builder.String()
+						if value != string(leftParenthesis) {
+							builder.Reset()
+							annos = append(annos, spec.Annotation{
+								Name:  annoName,
+								Value: value,
+							})
+							annoName = ""
+							break annotationLoop
+						}
 					}
 				case next == leftParenthesis:
 					if builder.Len() == 0 {
@@ -101,6 +114,7 @@ memberLoop:
 						Name:       annoName,
 						Properties: attrs,
 					})
+					annoName = ""
 					break annotationLoop
 				default:
 					builder.WriteRune(next)
@@ -114,7 +128,7 @@ memberLoop:
 			}
 
 			var line string
-			line, err = s.state.readLine()
+			line, err = s.state.readLineSkipComment()
 			if err != nil {
 				return err
 			}

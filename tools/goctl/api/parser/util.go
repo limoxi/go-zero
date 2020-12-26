@@ -2,20 +2,8 @@ package parser
 
 import (
 	"bufio"
-	"errors"
-	"regexp"
-	"strings"
 
 	"github.com/tal-tech/go-zero/tools/goctl/api/spec"
-)
-
-const (
-	// struct匹配
-	typeRegex = `(?m)(?m)(^ *type\s+[a-zA-Z][a-zA-Z0-9_-]+\s+(((struct)\s*?\{[\w\W]*?[^\{]\})|([a-zA-Z][a-zA-Z0-9_-]+)))|(^ *type\s*?\([\w\W]+\}\s*\))`
-)
-
-var (
-	emptyStrcut = errors.New("struct body not found")
 )
 
 var emptyType spec.Type
@@ -36,6 +24,10 @@ func isLetterDigit(r rune) bool {
 
 func isSpace(r rune) bool {
 	return r == ' ' || r == '\t'
+}
+
+func isSlash(r rune) bool {
+	return r == '/'
 }
 
 func isNewline(r rune) bool {
@@ -70,34 +62,4 @@ func skipSpaces(r *bufio.Reader) error {
 
 func unread(r *bufio.Reader) error {
 	return r.UnreadRune()
-}
-
-func MatchStruct(api string) (info, structBody, service string, err error) {
-	r := regexp.MustCompile(typeRegex)
-	indexes := r.FindAllStringIndex(api, -1)
-	if len(indexes) == 0 {
-		return "", "", "", emptyStrcut
-	}
-	startIndexes := indexes[0]
-	endIndexes := indexes[len(indexes)-1]
-
-	info = api[:startIndexes[0]]
-	structBody = api[startIndexes[0]:endIndexes[len(endIndexes)-1]]
-	service = api[endIndexes[len(endIndexes)-1]:]
-
-	firstIIndex := strings.Index(info, "i")
-	if firstIIndex > 0 {
-		info = info[firstIIndex:]
-	}
-
-	lastServiceRightBraceIndex := strings.LastIndex(service, "}") + 1
-	var firstServiceIndex int
-	for index, char := range service {
-		if !isSpace(char) && !isNewline(char) {
-			firstServiceIndex = index
-			break
-		}
-	}
-	service = service[firstServiceIndex:lastServiceRightBraceIndex]
-	return
 }

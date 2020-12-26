@@ -4,6 +4,7 @@ type (
 	Annotation struct {
 		Name       string
 		Properties map[string]string
+		Value      string
 	}
 
 	ApiSpec struct {
@@ -56,10 +57,8 @@ type (
 	}
 
 	Service struct {
-		Name        string
-		Annotations []Annotation
-		Routes      []Route
-		Groups      []Group
+		Name   string
+		Groups []Group
 	}
 
 	Type struct {
@@ -73,6 +72,7 @@ type (
 		StringExpr string
 		Name       string
 	}
+
 	PointerType struct {
 		StringExpr string
 		// it can be asserted as BasicType: int、bool、

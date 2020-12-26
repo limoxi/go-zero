@@ -26,19 +26,6 @@ func MaybeCreateFile(dir, subdir, file string) (fp *os.File, created bool, err e
 	return
 }
 
-func ClearAndOpenFile(fpath string) (*os.File, error) {
-	f, err := os.OpenFile(fpath, os.O_WRONLY|os.O_TRUNC, 0600)
-	if err != nil {
-		return nil, err
-	}
-
-	_, err = f.WriteString("")
-	if err != nil {
-		return nil, err
-	}
-	return f, nil
-}
-
 func WrapErr(err error, message string) error {
 	return errors.New(message + ", " + err.Error())
 }
@@ -74,4 +61,18 @@ func ComponentName(api *spec.ApiSpec) string {
 		return name[:len(name)-4] + "Components"
 	}
 	return name + "Components"
+}
+
+func WriteIndent(writer io.Writer, indent int) {
+	for i := 0; i < indent; i++ {
+		fmt.Fprint(writer, "\t")
+	}
+}
+
+func RemoveComment(line string) string {
+	var commentIdx = strings.Index(line, "//")
+	if commentIdx >= 0 {
+		return strings.TrimSpace(line[:commentIdx])
+	}
+	return strings.TrimSpace(line)
 }

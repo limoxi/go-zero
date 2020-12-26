@@ -22,6 +22,10 @@ type (
 )
 
 func NewRollingWindow(size int, interval time.Duration, opts ...RollingWindowOption) *RollingWindow {
+	if size < 1 {
+		panic("size must be greater than 0")
+	}
+
 	w := &RollingWindow{
 		size:     size,
 		win:      newWindow(size),
@@ -70,27 +74,29 @@ func (rw *RollingWindow) span() int {
 
 func (rw *RollingWindow) updateOffset() {
 	span := rw.span()
-	if span > 0 {
-		offset := rw.offset
-		// reset expired buckets
-		start := offset + 1
-		steps := start + span
-		var remainder int
-		if steps > rw.size {
-			remainder = steps - rw.size
-			steps = rw.size
-		}
-		for i := start; i < steps; i++ {
-			rw.win.resetBucket(i)
-			offset = i
-		}
-		for i := 0; i < remainder; i++ {
-			rw.win.resetBucket(i)
-			offset = i
-		}
-		rw.offset = offset
-		rw.lastTime = timex.Now()
+	if span <= 0 {
+		return
 	}
+
+	offset := rw.offset
+	start := offset + 1
+	steps := start + span
+	var remainder int
+	if steps > rw.size {
+		remainder = steps - rw.size
+		steps = rw.size
+	}
+
+	// reset expired buckets
+	for i := start; i < steps; i++ {
+		rw.win.resetBucket(i)
+	}
+	for i := 0; i < remainder; i++ {
+		rw.win.resetBucket(i)
+	}
+
+	rw.offset = (offset + span) % rw.size
+	rw.lastTime = timex.Now()
 }
 
 type Bucket struct {
@@ -114,9 +120,9 @@ type window struct {
 }
 
 func newWindow(size int) *window {
-	var buckets []*Bucket
+	buckets := make([]*Bucket, size)
 	for i := 0; i < size; i++ {
-		buckets = append(buckets, new(Bucket))
+		buckets[i] = new(Bucket)
 	}
 	return &window{
 		buckets: buckets,
@@ -130,12 +136,12 @@ func (w *window) add(offset int, v float64) {
 
 func (w *window) reduce(start, count int, fn func(b *Bucket)) {
 	for i := 0; i < count; i++ {
-		fn(w.buckets[(start+i)%len(w.buckets)])
+		fn(w.buckets[(start+i)%w.size])
 	}
 }
 
 func (w *window) resetBucket(offset int) {
-	w.buckets[offset].reset()
+	w.buckets[offset%w.size].reset()
 }
 
 func IgnoreCurrentBucket() RollingWindowOption {

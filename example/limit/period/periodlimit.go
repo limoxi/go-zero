@@ -41,6 +41,7 @@ func main() {
 	var allowed, denied int32
 	var wait sync.WaitGroup
 	for i := 0; i < *threads; i++ {
+		i := i
 		wait.Add(1)
 		go func() {
 			for {

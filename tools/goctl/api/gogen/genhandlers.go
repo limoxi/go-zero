@@ -2,115 +2,60 @@ package gogen
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"path"
-	"sort"
 	"strings"
 	"text/template"
+	"unicode"
 
 	"github.com/tal-tech/go-zero/tools/goctl/api/spec"
 	apiutil "github.com/tal-tech/go-zero/tools/goctl/api/util"
+	"github.com/tal-tech/go-zero/tools/goctl/config"
 	"github.com/tal-tech/go-zero/tools/goctl/util"
+	"github.com/tal-tech/go-zero/tools/goctl/util/format"
 	"github.com/tal-tech/go-zero/tools/goctl/vars"
 )
 
-const (
-	handlerTemplate = `package handler
+const handlerTemplate = `package handler
 
 import (
 	"net/http"
 
-	{{.importPackages}}
+	{{.ImportPackages}}
 )
 
-func {{.handlerName}}(ctx *svc.ServiceContext) http.HandlerFunc {
+func {{.HandlerName}}(ctx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		l := logic.{{.logic}}(r.Context(), ctx)
-		{{.handlerBody}}
-	}
-}
-`
-	handlerBodyTemplate = `{{.parseRequest}}
-		{{.processBody}}
-`
-	parseRequestTemplate = `var req {{.requestType}}
+		{{if .HasRequest}}var req types.{{.RequestType}}
 		if err := httpx.Parse(r, &req); err != nil {
 			httpx.Error(w, err)
 			return
-		}
-`
-	hasRespTemplate = `
-		{{.logicResponse}} l.{{.callee}}({{.req}})
+		}{{end}}
+
+		l := logic.New{{.LogicType}}(r.Context(), ctx)
+		{{if .HasResp}}resp, {{end}}err := l.{{.Call}}({{if .HasRequest}}req{{end}})
 		if err != nil {
 			httpx.Error(w, err)
 		} else {
-			{{.respWriter}}
+			{{if .HasResp}}httpx.OkJson(w, resp){{else}}httpx.Ok(w){{end}}
 		}
-	`
-)
+	}
+}
+`
 
-func genHandler(dir string, group spec.Group, route spec.Route) error {
-	handler, ok := apiutil.GetAnnotationValue(route.Annotations, "server", "handler")
-	if !ok {
-		return fmt.Errorf("missing handler annotation for %q", route.Path)
-	}
-	handler = getHandlerName(handler)
-	var reqBody string
-	if len(route.RequestType.Name) > 0 {
-		var bodyBuilder strings.Builder
-		t := template.Must(template.New("parseRequest").Parse(parseRequestTemplate))
-		if err := t.Execute(&bodyBuilder, map[string]string{
-			"requestType": typesPacket + "." + util.Title(route.RequestType.Name),
-		}); err != nil {
-			return err
-		}
-		reqBody = bodyBuilder.String()
-	}
-
-	var req = "req"
-	if len(route.RequestType.Name) == 0 {
-		req = ""
-	}
-	var logicResponse string
-	var writeResponse string
-	var respWriter = `httpx.WriteJson(w, http.StatusOK, resp)`
-	if len(route.ResponseType.Name) > 0 {
-		logicResponse = "resp, err :="
-		writeResponse = "resp, err"
-	} else {
-		logicResponse = "err :="
-		writeResponse = "nil, err"
-		respWriter = `httpx.Ok(w)`
-	}
-	var logicBodyBuilder strings.Builder
-	t := template.Must(template.New("hasRespTemplate").Parse(hasRespTemplate))
-	if err := t.Execute(&logicBodyBuilder, map[string]string{
-		"callee":        strings.Title(strings.TrimSuffix(handler, "Handler")),
-		"req":           req,
-		"logicResponse": logicResponse,
-		"writeResponse": writeResponse,
-		"respWriter":    respWriter,
-	}); err != nil {
-		return err
-	}
-	respBody := logicBodyBuilder.String()
-
-	if !strings.HasSuffix(handler, "Handler") {
-		handler = handler + "Handler"
-	}
-
-	var bodyBuilder strings.Builder
-	bodyTemplate := template.Must(template.New("handlerBodyTemplate").Parse(handlerBodyTemplate))
-	if err := bodyTemplate.Execute(&bodyBuilder, map[string]string{
-		"parseRequest": reqBody,
-		"processBody":  respBody,
-	}); err != nil {
-		return err
-	}
-	return doGenToFile(dir, handler, group, route, bodyBuilder)
+type Handler struct {
+	ImportPackages string
+	HandlerName    string
+	RequestType    string
+	LogicType      string
+	Call           string
+	HasResp        bool
+	HasRequest     bool
 }
 
-func doGenToFile(dir, handler string, group spec.Group, route spec.Route, bodyBuilder strings.Builder) error {
+func genHandler(dir string, cfg *config.Config, group spec.Group, route spec.Route) error {
+	handler := getHandlerName(route)
 	if getHandlerFolderPath(group, route) != handlerDir {
 		handler = strings.Title(handler)
 	}
@@ -118,12 +63,26 @@ func doGenToFile(dir, handler string, group spec.Group, route spec.Route, bodyBu
 	if err != nil {
 		return err
 	}
-	filename := strings.ToLower(handler)
-	if strings.HasSuffix(filename, "handler") {
-		filename = filename + ".go"
-	} else {
-		filename = filename + "handler.go"
+
+	return doGenToFile(dir, handler, cfg, group, route, Handler{
+		ImportPackages: genHandlerImports(group, route, parentPkg),
+		HandlerName:    handler,
+		RequestType:    util.Title(route.RequestType.Name),
+		LogicType:      strings.Title(getLogicName(route)),
+		Call:           strings.Title(strings.TrimSuffix(handler, "Handler")),
+		HasResp:        len(route.ResponseType.Name) > 0,
+		HasRequest:     len(route.RequestType.Name) > 0,
+	})
+}
+
+func doGenToFile(dir, handler string, cfg *config.Config, group spec.Group,
+	route spec.Route, handleObj Handler) error {
+	filename, err := format.FileNamingFormat(cfg.NamingFormat, handler)
+	if err != nil {
+		return err
 	}
+
+	filename = filename + ".go"
 	fp, created, err := apiutil.MaybeCreateFile(dir, getHandlerFolderPath(group, route), filename)
 	if err != nil {
 		return err
@@ -132,26 +91,27 @@ func doGenToFile(dir, handler string, group spec.Group, route spec.Route, bodyBu
 		return nil
 	}
 	defer fp.Close()
-	t := template.Must(template.New("handlerTemplate").Parse(handlerTemplate))
-	buffer := new(bytes.Buffer)
-	err = t.Execute(buffer, map[string]string{
-		"logic":          "New" + strings.TrimSuffix(strings.Title(handler), "Handler") + "Logic",
-		"importPackages": genHandlerImports(group, route, parentPkg),
-		"handlerName":    handler,
-		"handlerBody":    strings.TrimSpace(bodyBuilder.String()),
-	})
+
+	text, err := util.LoadTemplate(category, handlerTemplateFile, handlerTemplate)
 	if err != nil {
-		return nil
+		return err
 	}
+
+	buffer := new(bytes.Buffer)
+	err = template.Must(template.New("handlerTemplate").Parse(text)).Execute(buffer, handleObj)
+	if err != nil {
+		return err
+	}
+
 	formatCode := formatCode(buffer.String())
 	_, err = fp.WriteString(formatCode)
 	return err
 }
 
-func genHandlers(dir string, api *spec.ApiSpec) error {
+func genHandlers(dir string, cfg *config.Config, api *spec.ApiSpec) error {
 	for _, group := range api.Service.Groups {
 		for _, route := range group.Routes {
-			if err := genHandler(dir, group, route); err != nil {
+			if err := genHandler(dir, cfg, group, route); err != nil {
 				return err
 			}
 		}
@@ -162,32 +122,40 @@ func genHandlers(dir string, api *spec.ApiSpec) error {
 
 func genHandlerImports(group spec.Group, route spec.Route, parentPkg string) string {
 	var imports []string
-	imports = append(imports, fmt.Sprintf("\"%s/rest/httpx\"", vars.ProjectOpenSourceUrl))
-	imports = append(imports, fmt.Sprintf("\"%s\"", util.JoinPackages(parentPkg, contextDir)))
-	if len(route.RequestType.Name) > 0 || len(route.ResponseType.Name) > 0 {
-		imports = append(imports, fmt.Sprintf("\"%s\"", util.JoinPackages(parentPkg, typesDir)))
-	}
 	imports = append(imports, fmt.Sprintf("\"%s\"",
 		util.JoinPackages(parentPkg, getLogicFolderPath(group, route))))
-	sort.Strings(imports)
+	imports = append(imports, fmt.Sprintf("\"%s\"", util.JoinPackages(parentPkg, contextDir)))
+	if len(route.RequestType.Name) > 0 {
+		imports = append(imports, fmt.Sprintf("\"%s\"\n", util.JoinPackages(parentPkg, typesDir)))
+	}
+	imports = append(imports, fmt.Sprintf("\"%s/rest/httpx\"", vars.ProjectOpenSourceUrl))
 
 	return strings.Join(imports, "\n\t")
 }
 
-func getHandlerBaseName(handler string) string {
-	handlerName := util.Untitle(handler)
-	if strings.HasSuffix(handlerName, "handler") {
-		handlerName = strings.ReplaceAll(handlerName, "handler", "")
-	} else if strings.HasSuffix(handlerName, "Handler") {
-		handlerName = strings.ReplaceAll(handlerName, "Handler", "")
+func getHandlerBaseName(route spec.Route) (string, error) {
+	handler, ok := apiutil.GetAnnotationValue(route.Annotations, "server", "handler")
+	if !ok {
+		return "", fmt.Errorf("missing handler annotation for %q", route.Path)
 	}
-	return handlerName
+
+	for _, char := range handler {
+		if !unicode.IsDigit(char) && !unicode.IsLetter(char) {
+			return "", errors.New(fmt.Sprintf("route [%s] handler [%s] invalid, handler name should only contains letter or digit",
+				route.Path, handler))
+		}
+	}
+
+	handler = strings.TrimSpace(handler)
+	handler = strings.TrimSuffix(handler, "handler")
+	handler = strings.TrimSuffix(handler, "Handler")
+	return handler, nil
 }
 
 func getHandlerFolderPath(group spec.Group, route spec.Route) string {
-	folder, ok := apiutil.GetAnnotationValue(route.Annotations, "server", folderProperty)
+	folder, ok := apiutil.GetAnnotationValue(route.Annotations, "server", groupProperty)
 	if !ok {
-		folder, ok = apiutil.GetAnnotationValue(group.Annotations, "server", folderProperty)
+		folder, ok = apiutil.GetAnnotationValue(group.Annotations, "server", groupProperty)
 		if !ok {
 			return handlerDir
 		}
@@ -197,6 +165,20 @@ func getHandlerFolderPath(group spec.Group, route spec.Route) string {
 	return path.Join(handlerDir, folder)
 }
 
-func getHandlerName(handler string) string {
-	return getHandlerBaseName(handler) + "Handler"
+func getHandlerName(route spec.Route) string {
+	handler, err := getHandlerBaseName(route)
+	if err != nil {
+		panic(err)
+	}
+
+	return handler + "Handler"
+}
+
+func getLogicName(route spec.Route) string {
+	handler, err := getHandlerBaseName(route)
+	if err != nil {
+		panic(err)
+	}
+
+	return handler + "Logic"
 }

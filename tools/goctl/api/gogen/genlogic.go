@@ -9,7 +9,9 @@ import (
 
 	"github.com/tal-tech/go-zero/tools/goctl/api/spec"
 	"github.com/tal-tech/go-zero/tools/goctl/api/util"
+	"github.com/tal-tech/go-zero/tools/goctl/config"
 	ctlutil "github.com/tal-tech/go-zero/tools/goctl/util"
+	"github.com/tal-tech/go-zero/tools/goctl/util/format"
 	"github.com/tal-tech/go-zero/tools/goctl/vars"
 )
 
@@ -20,27 +22,30 @@ import (
 )
 
 type {{.logic}} struct {
-	ctx context.Context
 	logx.Logger
+	ctx    context.Context
+	svcCtx *svc.ServiceContext
 }
 
 func New{{.logic}}(ctx context.Context, svcCtx *svc.ServiceContext) {{.logic}} {
 	return {{.logic}}{
-		ctx:    ctx,
 		Logger: logx.WithContext(ctx),
+		ctx:    ctx,
+		svcCtx: svcCtx,
 	}
-	// TODO need set model here from svc
 }
 
 func (l *{{.logic}}) {{.function}}({{.request}}) {{.responseType}} {
+	// todo: add your logic here and delete this line
+
 	{{.returnString}}
 }
 `
 
-func genLogic(dir string, api *spec.ApiSpec) error {
+func genLogic(dir string, cfg *config.Config, api *spec.ApiSpec) error {
 	for _, g := range api.Service.Groups {
 		for _, r := range g.Routes {
-			err := genLogicByRoute(dir, g, r)
+			err := genLogicByRoute(dir, cfg, g, r)
 			if err != nil {
 				return err
 			}
@@ -49,19 +54,19 @@ func genLogic(dir string, api *spec.ApiSpec) error {
 	return nil
 }
 
-func genLogicByRoute(dir string, group spec.Group, route spec.Route) error {
-	handler, ok := util.GetAnnotationValue(route.Annotations, "server", "handler")
-	if !ok {
-		return fmt.Errorf("missing handler annotation for %q", route.Path)
+func genLogicByRoute(dir string, cfg *config.Config, group spec.Group, route spec.Route) error {
+	logic := getLogicName(route)
+	goFile, err := format.FileNamingFormat(cfg.NamingFormat, logic)
+	if err != nil {
+		return err
 	}
-	handler = strings.TrimSuffix(handler, "handler")
-	handler = strings.TrimSuffix(handler, "Handler")
-	filename := strings.ToLower(handler)
-	goFile := filename + "logic.go"
+
+	goFile = goFile + ".go"
 	fp, created, err := util.MaybeCreateFile(dir, getLogicFolderPath(group, route), goFile)
 	if err != nil {
 		return err
 	}
+
 	if !created {
 		return nil
 	}
@@ -71,14 +76,15 @@ func genLogicByRoute(dir string, group spec.Group, route spec.Route) error {
 	if err != nil {
 		return err
 	}
-	imports := genLogicImports(route, parentPkg)
 
-	responseString := ""
-	returnString := ""
-	requestString := ""
+	imports := genLogicImports(route, parentPkg)
+	var responseString string
+	var returnString string
+	var requestString string
 	if len(route.ResponseType.Name) > 0 {
-		responseString = "(*types." + strings.Title(route.ResponseType.Name) + ", error)"
-		returnString = "return nil, nil"
+		resp := strings.Title(route.ResponseType.Name)
+		responseString = "(*types." + resp + ", error)"
+		returnString = fmt.Sprintf("return &types.%s{}, nil", resp)
 	} else {
 		responseString = "error"
 		returnString = "return nil"
@@ -87,28 +93,34 @@ func genLogicByRoute(dir string, group spec.Group, route spec.Route) error {
 		requestString = "req " + "types." + strings.Title(route.RequestType.Name)
 	}
 
-	t := template.Must(template.New("logicTemplate").Parse(logicTemplate))
+	text, err := ctlutil.LoadTemplate(category, logicTemplateFile, logicTemplate)
+	if err != nil {
+		return err
+	}
+
+	t := template.Must(template.New("logicTemplate").Parse(text))
 	buffer := new(bytes.Buffer)
 	err = t.Execute(fp, map[string]string{
 		"imports":      imports,
-		"logic":        strings.Title(handler) + "Logic",
-		"function":     strings.Title(strings.TrimSuffix(handler, "Handler")),
+		"logic":        strings.Title(logic),
+		"function":     strings.Title(strings.TrimSuffix(logic, "Logic")),
 		"responseType": responseString,
 		"returnString": returnString,
 		"request":      requestString,
 	})
 	if err != nil {
-		return nil
+		return err
 	}
+
 	formatCode := formatCode(buffer.String())
 	_, err = fp.WriteString(formatCode)
 	return err
 }
 
 func getLogicFolderPath(group spec.Group, route spec.Route) string {
-	folder, ok := util.GetAnnotationValue(route.Annotations, "server", folderProperty)
+	folder, ok := util.GetAnnotationValue(route.Annotations, "server", groupProperty)
 	if !ok {
-		folder, ok = util.GetAnnotationValue(group.Annotations, "server", folderProperty)
+		folder, ok = util.GetAnnotationValue(group.Annotations, "server", groupProperty)
 		if !ok {
 			return logicDir
 		}
@@ -120,12 +132,11 @@ func getLogicFolderPath(group spec.Group, route spec.Route) string {
 
 func genLogicImports(route spec.Route, parentPkg string) string {
 	var imports []string
-	imports = append(imports, `"context"`)
-	imports = append(imports, "\n")
-	imports = append(imports, fmt.Sprintf("\"%s/core/logx\"", vars.ProjectOpenSourceUrl))
-	if len(route.ResponseType.Name) > 0 || len(route.RequestType.Name) > 0 {
-		imports = append(imports, fmt.Sprintf("\"%s\"", ctlutil.JoinPackages(parentPkg, typesDir)))
-	}
+	imports = append(imports, `"context"`+"\n")
 	imports = append(imports, fmt.Sprintf("\"%s\"", ctlutil.JoinPackages(parentPkg, contextDir)))
+	if len(route.ResponseType.Name) > 0 || len(route.RequestType.Name) > 0 {
+		imports = append(imports, fmt.Sprintf("\"%s\"\n", ctlutil.JoinPackages(parentPkg, typesDir)))
+	}
+	imports = append(imports, fmt.Sprintf("\"%s/core/logx\"", vars.ProjectOpenSourceUrl))
 	return strings.Join(imports, "\n\t")
 }

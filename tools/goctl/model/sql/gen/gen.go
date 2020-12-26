@@ -7,12 +7,15 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tal-tech/go-zero/tools/goctl/config"
+	"github.com/tal-tech/go-zero/tools/goctl/model/sql/model"
 	"github.com/tal-tech/go-zero/tools/goctl/model/sql/parser"
 	"github.com/tal-tech/go-zero/tools/goctl/model/sql/template"
+	modelutil "github.com/tal-tech/go-zero/tools/goctl/model/sql/util"
 	"github.com/tal-tech/go-zero/tools/goctl/util"
 	"github.com/tal-tech/go-zero/tools/goctl/util/console"
+	"github.com/tal-tech/go-zero/tools/goctl/util/format"
 	"github.com/tal-tech/go-zero/tools/goctl/util/stringx"
-	"github.com/tal-tech/go-zero/tools/goctl/util/templatex"
 )
 
 const (
@@ -22,25 +25,39 @@ const (
 
 type (
 	defaultGenerator struct {
-		source string
-		dir    string
+		//source string
+		dir string
 		console.Console
+		pkg string
+		cfg *config.Config
 	}
 	Option func(generator *defaultGenerator)
 )
 
-func NewDefaultGenerator(source, dir string, opt ...Option) *defaultGenerator {
+func NewDefaultGenerator(dir string, cfg *config.Config, opt ...Option) (*defaultGenerator, error) {
 	if dir == "" {
 		dir = pwd
 	}
-	generator := &defaultGenerator{source: source, dir: dir}
+	dirAbs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	dir = dirAbs
+	pkg := filepath.Base(dirAbs)
+	err = util.MkdirIfNotExist(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	generator := &defaultGenerator{dir: dir, cfg: cfg, pkg: pkg}
 	var optionList []Option
 	optionList = append(optionList, newDefaultOption())
 	optionList = append(optionList, opt...)
 	for _, fn := range optionList {
 		fn(generator)
 	}
-	return generator
+	return generator, nil
 }
 
 func WithConsoleOption(c console.Console) Option {
@@ -55,22 +72,54 @@ func newDefaultOption() Option {
 	}
 }
 
-func (g *defaultGenerator) Start(withCache bool) error {
+func (g *defaultGenerator) StartFromDDL(source string, withCache bool) error {
+	modelList, err := g.genFromDDL(source, withCache)
+	if err != nil {
+		return err
+	}
+
+	return g.createFile(modelList)
+}
+
+func (g *defaultGenerator) StartFromInformationSchema(db string, columns map[string][]*model.Column, withCache bool) error {
+	m := make(map[string]string)
+	for tableName, column := range columns {
+		table, err := parser.ConvertColumn(db, tableName, column)
+		if err != nil {
+			return err
+		}
+
+		code, err := g.genModel(*table, withCache)
+		if err != nil {
+			return err
+		}
+
+		m[table.Name.Source()] = code
+	}
+	return g.createFile(m)
+}
+
+func (g *defaultGenerator) createFile(modelList map[string]string) error {
 	dirAbs, err := filepath.Abs(g.dir)
 	if err != nil {
 		return err
 	}
+
+	g.dir = dirAbs
+	g.pkg = filepath.Base(dirAbs)
 	err = util.MkdirIfNotExist(dirAbs)
-	if err != nil {
-		return err
-	}
-	modelList, err := g.genFromDDL(withCache)
 	if err != nil {
 		return err
 	}
 
 	for tableName, code := range modelList {
-		name := fmt.Sprintf("%smodel.go", strings.ToLower(stringx.From(tableName).ToCamel()))
+		tn := stringx.From(tableName)
+		modelFilename, err := format.FileNamingFormat(g.cfg.NamingFormat, fmt.Sprintf("%s_model", tn.Source()))
+		if err != nil {
+			return err
+		}
+
+		name := modelFilename + ".go"
 		filename := filepath.Join(dirAbs, name)
 		if util.FileExists(filename) {
 			g.Warning("%s already exists, ignored.", name)
@@ -82,20 +131,31 @@ func (g *defaultGenerator) Start(withCache bool) error {
 		}
 	}
 	// generate error file
-	filename := filepath.Join(dirAbs, "error.go")
-	if !util.FileExists(filename) {
-		err = ioutil.WriteFile(filename, []byte(template.Error), os.ModePerm)
-		if err != nil {
-			return err
-		}
+	varFilename, err := format.FileNamingFormat(g.cfg.NamingFormat, "vars")
+	if err != nil {
+		return err
 	}
+
+	filename := filepath.Join(dirAbs, varFilename+".go")
+	text, err := util.LoadTemplate(category, errTemplateFile, template.Error)
+	if err != nil {
+		return err
+	}
+
+	err = util.With("vars").Parse(text).SaveTo(map[string]interface{}{
+		"pkg": g.pkg,
+	}, filename, false)
+	if err != nil {
+		return err
+	}
+
 	g.Success("Done.")
 	return nil
 }
 
 // ret1: key-table name,value-code
-func (g *defaultGenerator) genFromDDL(withCache bool) (map[string]string, error) {
-	ddlList := g.split()
+func (g *defaultGenerator) genFromDDL(source string, withCache bool) (map[string]string, error) {
+	ddlList := g.split(source)
 	m := make(map[string]string)
 	for _, ddl := range ddlList {
 		table, err := parser.Parse(ddl)
@@ -114,70 +174,123 @@ func (g *defaultGenerator) genFromDDL(withCache bool) (map[string]string, error)
 type (
 	Table struct {
 		parser.Table
-		CacheKey map[string]Key
+		CacheKey          map[string]Key
+		ContainsUniqueKey bool
 	}
 )
 
 func (g *defaultGenerator) genModel(in parser.Table, withCache bool) (string, error) {
-	t := templatex.With("model").
-		Parse(template.Model).
+	if len(in.PrimaryKey.Name.Source()) == 0 {
+		return "", fmt.Errorf("table %s: missing primary key", in.Name.Source())
+	}
+
+	text, err := util.LoadTemplate(category, modelTemplateFile, template.Model)
+	if err != nil {
+		return "", err
+	}
+
+	t := util.With("model").
+		Parse(text).
 		GoFmt(true)
 
 	m, err := genCacheKeys(in)
 	if err != nil {
 		return "", err
 	}
-	importsCode := genImports(withCache)
+
+	importsCode, err := genImports(withCache, in.ContainsTime())
+	if err != nil {
+		return "", err
+	}
+
 	var table Table
 	table.Table = in
 	table.CacheKey = m
+	var containsUniqueCache = false
+	for _, item := range table.Fields {
+		if item.IsUniqueKey {
+			containsUniqueCache = true
+			break
+		}
+	}
+	table.ContainsUniqueKey = containsUniqueCache
 
 	varsCode, err := genVars(table, withCache)
 	if err != nil {
 		return "", err
 	}
-	typesCode, err := genTypes(table, withCache)
+
+	insertCode, insertCodeMethod, err := genInsert(table, withCache)
 	if err != nil {
 		return "", err
 	}
+
+	var findCode = make([]string, 0)
+	findOneCode, findOneCodeMethod, err := genFindOne(table, withCache)
+	if err != nil {
+		return "", err
+	}
+
+	ret, err := genFindOneByField(table, withCache)
+	if err != nil {
+		return "", err
+	}
+
+	findCode = append(findCode, findOneCode, ret.findOneMethod)
+	updateCode, updateCodeMethod, err := genUpdate(table, withCache)
+	if err != nil {
+		return "", err
+	}
+
+	deleteCode, deleteCodeMethod, err := genDelete(table, withCache)
+	if err != nil {
+		return "", err
+	}
+
+	var list []string
+	list = append(list, insertCodeMethod, findOneCodeMethod, ret.findOneInterfaceMethod, updateCodeMethod, deleteCodeMethod)
+	typesCode, err := genTypes(table, strings.Join(modelutil.TrimStringSlice(list), util.NL), withCache)
+	if err != nil {
+		return "", err
+	}
+
 	newCode, err := genNew(table, withCache)
 	if err != nil {
 		return "", err
 	}
-	insertCode, err := genInsert(table, withCache)
-	if err != nil {
-		return "", err
-	}
-	var findCode = make([]string, 0)
-	findOneCode, err := genFindOne(table, withCache)
-	if err != nil {
-		return "", err
-	}
-	findOneByFieldCode, err := genFineOneByField(table, withCache)
-	if err != nil {
-		return "", err
-	}
-	findCode = append(findCode, findOneCode, findOneByFieldCode)
-	updateCode, err := genUpdate(table, withCache)
-	if err != nil {
-		return "", err
-	}
-	deleteCode, err := genDelete(table, withCache)
-	if err != nil {
-		return "", err
-	}
+
 	output, err := t.Execute(map[string]interface{}{
-		"imports": importsCode,
-		"vars":    varsCode,
-		"types":   typesCode,
-		"new":     newCode,
-		"insert":  insertCode,
-		"find":    strings.Join(findCode, "\r\n"),
-		"update":  updateCode,
-		"delete":  deleteCode,
+		"pkg":         g.pkg,
+		"imports":     importsCode,
+		"vars":        varsCode,
+		"types":       typesCode,
+		"new":         newCode,
+		"insert":      insertCode,
+		"find":        strings.Join(findCode, "\n"),
+		"update":      updateCode,
+		"delete":      deleteCode,
+		"extraMethod": ret.cacheExtra,
 	})
 	if err != nil {
 		return "", err
 	}
+
 	return output.String(), nil
+}
+
+func wrapWithRawString(v string) string {
+	if v == "`" {
+		return v
+	}
+
+	if !strings.HasPrefix(v, "`") {
+		v = "`" + v
+	}
+
+	if !strings.HasSuffix(v, "`") {
+		v = v + "`"
+	} else if len(v) == 1 {
+		v = v + "`"
+	}
+	return v
 }

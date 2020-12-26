@@ -4,12 +4,16 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/tal-tech/go-zero/tools/goctl/vars"
 )
 
-const pkgSep = "/"
+const (
+	pkgSep           = "/"
+	goModeIdentifier = "go.mod"
+)
 
 func JoinPackages(pkgs ...string) string {
 	return strings.Join(pkgs, pkgSep)
@@ -42,4 +46,63 @@ func PathFromGoSrc() (string, error) {
 
 	// skip slash
 	return dir[len(parent)+1:], nil
+}
+
+func FindGoModPath(dir string) (string, bool) {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", false
+	}
+
+	absDir = strings.ReplaceAll(absDir, `\`, `/`)
+	var rootPath string
+	var tempPath = absDir
+	var hasGoMod = false
+	for {
+		if FileExists(filepath.Join(tempPath, goModeIdentifier)) {
+			rootPath = strings.TrimPrefix(absDir[len(tempPath):], "/")
+			hasGoMod = true
+			break
+		}
+
+		if tempPath == filepath.Dir(tempPath) {
+			break
+		}
+
+		tempPath = filepath.Dir(tempPath)
+		if tempPath == string(filepath.Separator) {
+			break
+		}
+	}
+	if hasGoMod {
+		return rootPath, true
+	}
+	return "", false
+}
+
+func FindProjectPath(loc string) (string, bool) {
+	var dir string
+	if strings.IndexByte(loc, '/') == 0 {
+		dir = loc
+	} else {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", false
+		}
+
+		dir = filepath.Join(wd, loc)
+	}
+
+	for {
+		if FileExists(filepath.Join(dir, goModeIdentifier)) {
+			return dir, true
+		}
+
+		dir = filepath.Dir(dir)
+		if dir == "/" {
+			break
+		}
+	}
+
+	return "", false
 }

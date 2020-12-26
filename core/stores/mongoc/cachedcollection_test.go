@@ -11,14 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis"
 	"github.com/globalsign/mgo"
 	"github.com/globalsign/mgo/bson"
 	"github.com/stretchr/testify/assert"
 	"github.com/tal-tech/go-zero/core/stat"
-	"github.com/tal-tech/go-zero/core/stores/internal"
+	"github.com/tal-tech/go-zero/core/stores/cache"
 	"github.com/tal-tech/go-zero/core/stores/mongo"
 	"github.com/tal-tech/go-zero/core/stores/redis"
+	"github.com/tal-tech/go-zero/core/stores/redis/redistest"
 )
 
 func init() {
@@ -27,13 +27,11 @@ func init() {
 
 func TestStat(t *testing.T) {
 	resetStats()
-	s, err := miniredis.Run()
-	if err != nil {
-		t.Error(err)
-	}
+	r, clean, err := redistest.CreateRedis()
+	assert.Nil(t, err)
+	defer clean()
 
-	r := redis.NewRedis(s.Addr(), redis.NodeType)
-	cach := internal.NewCacheNode(r, sharedCalls, stats, mgo.ErrNotFound)
+	cach := cache.NewCacheNode(r, sharedCalls, stats, mgo.ErrNotFound)
 	c := newCollection(dummyConn{}, cach)
 
 	for i := 0; i < 10; i++ {
@@ -56,7 +54,7 @@ func TestStatCacheFails(t *testing.T) {
 	defer log.SetOutput(os.Stdout)
 
 	r := redis.NewRedis("localhost:59999", redis.NodeType)
-	cach := internal.NewCacheNode(r, sharedCalls, stats, mgo.ErrNotFound)
+	cach := cache.NewCacheNode(r, sharedCalls, stats, mgo.ErrNotFound)
 	c := newCollection(dummyConn{}, cach)
 
 	for i := 0; i < 20; i++ {
@@ -73,13 +71,11 @@ func TestStatCacheFails(t *testing.T) {
 
 func TestStatDbFails(t *testing.T) {
 	resetStats()
-	s, err := miniredis.Run()
-	if err != nil {
-		t.Error(err)
-	}
+	r, clean, err := redistest.CreateRedis()
+	assert.Nil(t, err)
+	defer clean()
 
-	r := redis.NewRedis(s.Addr(), redis.NodeType)
-	cach := internal.NewCacheNode(r, sharedCalls, stats, mgo.ErrNotFound)
+	cach := cache.NewCacheNode(r, sharedCalls, stats, mgo.ErrNotFound)
 	c := newCollection(dummyConn{}, cach)
 
 	for i := 0; i < 20; i++ {
@@ -97,13 +93,11 @@ func TestStatDbFails(t *testing.T) {
 
 func TestStatFromMemory(t *testing.T) {
 	resetStats()
-	s, err := miniredis.Run()
-	if err != nil {
-		t.Error(err)
-	}
+	r, clean, err := redistest.CreateRedis()
+	assert.Nil(t, err)
+	defer clean()
 
-	r := redis.NewRedis(s.Addr(), redis.NodeType)
-	cach := internal.NewCacheNode(r, sharedCalls, stats, mgo.ErrNotFound)
+	cach := cache.NewCacheNode(r, sharedCalls, stats, mgo.ErrNotFound)
 	c := newCollection(dummyConn{}, cach)
 
 	var all sync.WaitGroup

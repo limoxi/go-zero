@@ -7,6 +7,7 @@ import (
 	"github.com/tal-tech/go-zero/core/logx"
 	"github.com/tal-tech/go-zero/rest/handler"
 	"github.com/tal-tech/go-zero/rest/httpx"
+	"github.com/tal-tech/go-zero/rest/router"
 )
 
 type (
@@ -22,6 +23,9 @@ type (
 	}
 )
 
+// MustNewServer returns a server with given config of c and options defined in opts.
+// Be aware that later RunOption might overwrite previous one that write the same option.
+// The process will exit if error occurs.
 func MustNewServer(c RestConf, opts ...RunOption) *Server {
 	engine, err := NewServer(c, opts...)
 	if err != nil {
@@ -31,6 +35,8 @@ func MustNewServer(c RestConf, opts ...RunOption) *Server {
 	return engine
 }
 
+// NewServer returns a server with given config of c and options defined in opts.
+// Be aware that later RunOption might overwrite previous one that write the same option.
 func NewServer(c RestConf, opts ...RunOption) (*Server, error) {
 	if err := c.SetUp(); err != nil {
 		return nil, err
@@ -103,6 +109,13 @@ func WithJwtTransition(secret, prevSecret string) RouteOption {
 	}
 }
 
+func WithMiddlewares(ms []Middleware, rs ...Route) []Route {
+	for i := len(ms) - 1; i >= 0; i-- {
+		rs = WithMiddleware(ms[i], rs...)
+	}
+	return rs
+}
+
 func WithMiddleware(middleware Middleware, rs ...Route) []Route {
 	routes := make([]Route, len(rs))
 
@@ -116,6 +129,18 @@ func WithMiddleware(middleware Middleware, rs ...Route) []Route {
 	}
 
 	return routes
+}
+
+func WithNotFoundHandler(handler http.Handler) RunOption {
+	rt := router.NewRouter()
+	rt.SetNotFoundHandler(handler)
+	return WithRouter(rt)
+}
+
+func WithNotAllowedHandler(handler http.Handler) RunOption {
+	rt := router.NewRouter()
+	rt.SetNotAllowedHandler(handler)
+	return WithRouter(rt)
 }
 
 func WithPriority() RouteOption {
