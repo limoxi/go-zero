@@ -25,6 +25,7 @@ const tmpFile = "%s-%d"
 
 var tmpDir = path.Join(os.TempDir(), "goctl")
 
+// GoCommand gen go project files from command line
 func GoCommand(c *cli.Context) error {
 	apiFile := c.String("api")
 	dir := c.String("dir")
@@ -40,12 +41,9 @@ func GoCommand(c *cli.Context) error {
 	return DoGenProject(apiFile, dir, namingStyle)
 }
 
+// DoGenProject gen go project files with api file
 func DoGenProject(apiFile, dir, style string) error {
-	p, err := parser.NewParser(apiFile)
-	if err != nil {
-		return err
-	}
-	api, err := p.Parse()
+	api, err := parser.Parse(apiFile)
 	if err != nil {
 		return err
 	}
@@ -56,14 +54,19 @@ func DoGenProject(apiFile, dir, style string) error {
 	}
 
 	logx.Must(util.MkdirIfNotExist(dir))
+	rootPkg, err := getParentPackage(dir)
+	if err != nil {
+		return err
+	}
+
 	logx.Must(genEtc(dir, cfg, api))
 	logx.Must(genConfig(dir, cfg, api))
-	logx.Must(genMain(dir, cfg, api))
-	logx.Must(genServiceContext(dir, cfg, api))
+	logx.Must(genMain(dir, rootPkg, cfg, api))
+	logx.Must(genServiceContext(dir, rootPkg, cfg, api))
 	logx.Must(genTypes(dir, cfg, api))
-	logx.Must(genRoutes(dir, cfg, api))
-	logx.Must(genHandlers(dir, cfg, api))
-	logx.Must(genLogic(dir, cfg, api))
+	logx.Must(genRoutes(dir, rootPkg, cfg, api))
+	logx.Must(genHandlers(dir, rootPkg, cfg, api))
+	logx.Must(genLogic(dir, rootPkg, cfg, api))
 	logx.Must(genMiddleware(dir, cfg, api))
 
 	if err := backupAndSweep(apiFile); err != nil {

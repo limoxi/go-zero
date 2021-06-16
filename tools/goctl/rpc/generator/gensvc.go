@@ -15,17 +15,19 @@ const svcTemplate = `package svc
 import {{.imports}}
 
 type ServiceContext struct {
-	c config.Config
+	Config config.Config
 }
 
 func NewServiceContext(c config.Config) *ServiceContext {
 	return &ServiceContext{
-		c:c,
+		Config:c,
 	}
 }
 `
 
-func (g *defaultGenerator) GenSvc(ctx DirContext, _ parser.Proto, cfg *conf.Config) error {
+// GenSvc generates the servicecontext.go file, which is the resource dependency of a service,
+// such as rpc dependency, model dependency, etc.
+func (g *DefaultGenerator) GenSvc(ctx DirContext, _ parser.Proto, cfg *conf.Config) error {
 	dir := ctx.GetSvc()
 	svcFilename, err := format.FileNamingFormat(cfg.NamingFormat, "service_context")
 	if err != nil {
